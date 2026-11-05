@@ -62,6 +62,11 @@ class MainActivity : Activity() {
     private lateinit var modeLabel: TextView
 
     private var mic: MicListener? = null
+    private var google: GoogleSpeech? = null
+    private var googleRec: GoogleSpeech? = null
+    private val recParts = ArrayList<String>()
+    private var recMs = 0L
+    private var recStopping = false
     private var activeButton: Button? = null
     private var activeButtonText = ""
     private var recorder: MicRecorder? = null
@@ -387,7 +392,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- mod 1 ve 2: canlı dinleme
 
     private fun toggleListen() {
-        if (mic != null) {
+        if (mic != null || google != null) {
             stopAll()
             return
         }
@@ -395,11 +400,15 @@ class MainActivity : Activity() {
         val pos = listenSrc.selectedItemPosition
         val fixed = if (pos <= 0) null else Lang.entries[pos - 1]
         val tgt = Lang.entries[listenTgt.selectedItemPosition]
+        if (isOnline()) {
+            startGoogle(listenBtn, "Dinlemeyi durdur", if (fixed != null) listOf(fixed) else Lang.entries.toList()) { tgt }
+            return
+        }
         startMic(listenBtn, "Dinlemeyi durdur", fixed, Lang.entries.toList()) { tgt }
     }
 
     private fun toggleConversation() {
-        if (mic != null) {
+        if (mic != null || google != null) {
             stopAll()
             return
         }
@@ -410,7 +419,81 @@ class MainActivity : Activity() {
             setStatus("İki farklı dil seçin.", error = true)
             return
         }
+        if (isOnline()) {
+            startGoogle(convBtn, "Konuşmayı durdur", listOf(a, b)) { src -> if (src == a) b else a }
+            return
+        }
         startMic(convBtn, "Konuşmayı durdur", null, listOf(a, b)) { src -> if (src == a) b else a }
+    }
+
+    // ---------------------------------------------------------------- İnternetli canlı dinleme (Google)
+
+    private fun startGoogle(btn: Button, stopText: String, allowed: List<Lang>, target: (Lang) -> Lang) {
+        val engine = Core.engine ?: return
+        val token = session.incrementAndGet()
+        lateinit var g: GoogleSpeech
+        g = GoogleSpeech(
+            this, allowed,
+            onPartial = { t -> if (session.get() == token) setStatus("🎤 $t") },
+            onFinal = { text, lang, ms -> if (session.get() == token) onGoogleFinal(token, g, engine, text, lang, ms, allowed, target) },
+            onError = { m ->
+                if (session.get() == token) {
+                    showError("Ses tanıma", IllegalStateException(m))
+                    stopAll()
+                }
+            },
+        )
+        google = g
+        activeButton = btn
+        activeButtonText = btn.text.toString()
+        btn.text = stopText
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setStatus("Google konuşma tanıması hazırlanıyor…")
+        g.prepare({ msg -> if (session.get() == token) setStatus(msg) }) {
+            if (session.get() == token) {
+                setStatus("Dinleniyor…")
+                g.listen()
+            }
+        }
+    }
+
+    private fun onGoogleFinal(
+        token: Int, g: GoogleSpeech, engine: Engine, text: String, lang: Lang?, ms: Long,
+        allowed: List<Lang>, target: (Lang) -> Lang,
+    ) {
+        if (text.isBlank() || Engine.isNoise(text)) {
+            g.listen()
+            return
+        }
+        setStatus("Çevriliyor…")
+        Core.worker.execute {
+            try {
+                // Tanıyıcı dili bildirmediyse metnin dilini Google Çeviri belirler.
+                val src = lang ?: GoogleTranslate.detect(text, allowed)
+                if (src == null) {
+                    post { addNote("Dil anlaşılamadı. Lütfen tekrar söyleyin.", text) }
+                } else {
+                    val tgt = target(src)
+                    val t0 = System.currentTimeMillis()
+                    val out = engine.translate(text, src, tgt, true)
+                    val r = Engine.Outcome.Done(src, text, tgt, out, ms, System.currentTimeMillis() - t0)
+                    post { addTurn(r, null) }
+                    if (src != tgt && session.get() == token) {
+                        val audio = engine.speak(out, tgt, true, voiceIndex(tgt), speed())
+                        Player.play(audio.samples, audio.rate) { session.get() != token }
+                    }
+                }
+            } catch (t: Throwable) {
+                post { showError("Çeviri hatası", t) }
+            } finally {
+                post {
+                    if (session.get() == token) {
+                        setStatus("Dinleniyor…")
+                        g.listen()
+                    }
+                }
+            }
+        }
     }
 
     private fun startMic(btn: Button, stopText: String, fixed: Lang?, allowed: List<Lang>, target: (Lang) -> Lang) {
@@ -468,6 +551,11 @@ class MainActivity : Activity() {
         session.incrementAndGet()
         mic?.stop()
         mic = null
+        google?.release()
+        google = null
+        googleRec?.release()
+        googleRec = null
+        recStopping = false
         activeButton?.text = activeButtonText
         activeButton = null
         recorder?.stop()
@@ -582,6 +670,19 @@ class MainActivity : Activity() {
     }
 
     private fun toggleRecord() {
+        if (googleRec != null) {
+            if (!recStopping) {
+                recStopping = true
+                recBtn.text = "Kaydı başlat"
+                setStatus("Kayıt bitiriliyor…")
+                googleRec?.finish()
+            }
+            return
+        }
+        if (recorder == null && isOnline()) {
+            startOnlineRecord()
+            return
+        }
         val r = recorder
         if (r != null) {
             recorder = null
@@ -597,6 +698,83 @@ class MainActivity : Activity() {
         recBtn.text = "Kaydı bitir ve çevir"
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setStatus("Kaydediliyor… konuşun, bitince düğmeye basın.")
+    }
+
+    private fun startOnlineRecord() {
+        val engine = Core.engine ?: return
+        if (!ensureMic()) return
+        val mine = Lang.entries[outMine.selectedItemPosition]
+        val theirs = Lang.entries[outTheirs.selectedItemPosition]
+        if (mine == theirs) {
+            setStatus("İki farklı dil seçin.", error = true)
+            return
+        }
+        val token = session.incrementAndGet()
+        recParts.clear()
+        recMs = 0L
+        recStopping = false
+        outgoingAudio = null
+        lateinit var g: GoogleSpeech
+        g = GoogleSpeech(
+            this, listOf(mine),
+            onPartial = { t -> if (session.get() == token) setStatus("🎤 $t") },
+            onFinal = { text, _, ms ->
+                if (session.get() == token) {
+                    if (text.isNotBlank() && !Engine.isNoise(text)) {
+                        recParts.add(text)
+                        recMs += ms
+                    }
+                    if (recStopping) completeOnlineRecord(token, engine, mine, theirs) else g.listen()
+                }
+            },
+            onError = { m ->
+                if (session.get() == token) {
+                    showError("Ses tanıma", IllegalStateException(m))
+                    stopAll()
+                }
+            },
+        )
+        googleRec = g
+        recBtn.text = "Kaydı bitir ve çevir"
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setStatus("Google konuşma tanıması hazırlanıyor…")
+        g.prepare({ msg -> if (session.get() == token) setStatus(msg) }) {
+            if (session.get() == token) {
+                setStatus("Kaydediliyor… konuşun, bitince düğmeye basın.")
+                g.listen()
+            }
+        }
+    }
+
+    private fun completeOnlineRecord(token: Int, engine: Engine, mine: Lang, theirs: Lang) {
+        googleRec?.release()
+        googleRec = null
+        recStopping = false
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val text = recParts.joinToString(" ").trim()
+        val asr = recMs
+        if (text.isEmpty()) {
+            setStatus("Kayıtta konuşma bulunamadı.", error = true)
+            return
+        }
+        setStatus("Kayıt çevriliyor…")
+        Core.worker.execute {
+            try {
+                val t0 = System.currentTimeMillis()
+                val out = engine.translate(text, mine, theirs, true)
+                val res = Engine.Outcome.Done(mine, text, theirs, out, asr, System.currentTimeMillis() - t0)
+                val audio = engine.speak(out, theirs, true, voiceIndex(theirs), speed())
+                if (session.get() == token) {
+                    outgoingAudio = audio
+                    post {
+                        addTurn(res, "Giden mesaj")
+                        setStatus("Hazır: \"Dinle\" ile kontrol edin, \"WhatsApp'a gönder\" ile paylaşın.")
+                    }
+                }
+            } catch (t: Throwable) {
+                post { showError("Kayıt çevrilemedi", t) }
+            }
+        }
     }
 
     private fun processOutgoing(samples: FloatArray) {

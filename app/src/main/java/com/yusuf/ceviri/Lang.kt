@@ -1,9 +1,15 @@
 package com.yusuf.ceviri
 
-enum class Lang(val whisper: String, val nllb: String, val label: String) {
-    TR("tr", "tur_Latn", "Türkçe"),
-    ID("id", "ind_Latn", "Endonezce"),
-    EN("en", "eng_Latn", "İngilizce");
+enum class Lang(val whisper: String, val nllb: String, val label: String, val bcp47: String) {
+    TR("tr", "tur_Latn", "Türkçe", "tr-TR"),
+    ID("id", "ind_Latn", "Endonezce", "id-ID"),
+    EN("en", "eng_Latn", "İngilizce", "en-US");
+
+    /** "tr-TR", "id_ID", "in-ID" (Android'in eski Endonezce kodu) gibi etiketleri tanır. */
+    fun matches(tag: String): Boolean {
+        val p = tag.lowercase().replace('_', '-').substringBefore('-')
+        return p == whisper || (this == ID && p == "in")
+    }
 
     companion object {
         /** Whisper dil kodunu ("tr", "<|tr|>" vb.) sade koda çevirir. */

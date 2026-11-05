@@ -58,6 +58,29 @@ object GoogleTranslate {
     }
 }
 
+/** Tanıyıcı dil bildirmediğinde metnin dilini Google Çeviri'ye sorar; izinli değilse null. */
+fun GoogleTranslate.detect(text: String, allowed: List<Lang>): Lang? {
+    val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t")
+    val conn = url.openConnection() as HttpURLConnection
+    try {
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 5000
+        conn.readTimeout = 8000
+        conn.doOutput = true
+        conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded;charset=utf-8")
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        conn.outputStream.use { it.write(("q=" + URLEncoder.encode(text, "UTF-8")).toByteArray(Charsets.UTF_8)) }
+        if (conn.responseCode != 200) throw IOException("Google Çeviri yanıt vermedi (HTTP ${conn.responseCode})")
+        val json = conn.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
+        val code = JSONArray(json).optString(2, "")
+        return Lang.entries.firstOrNull { it.matches(code) }?.takeIf { it in allowed }
+    } catch (e: java.net.UnknownHostException) {
+        throw IOException("İnternet bağlantısı yok (Google Çeviri)")
+    } finally {
+        conn.disconnect()
+    }
+}
+
 data class EdgeVoice(val name: String, val lang: Lang, val label: String)
 
 object EdgeVoices {
@@ -105,8 +128,11 @@ object EdgeTts {
                 clockSkewSeconds = server - System.currentTimeMillis() / 1000
                 synthOnce(text, voice, speed)
             } else {
-                throw IOException(e.message)
+                synthOnce(text, voice, speed)
             }
+        } catch (e: IOException) {
+            // Servis ara sıra boş yanıt döndürüyor; aynı istek bir kez daha denenir.
+            synthOnce(text, voice, speed)
         }
     }
 
