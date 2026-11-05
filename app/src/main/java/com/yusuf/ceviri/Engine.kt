@@ -1,7 +1,6 @@
 package com.yusuf.ceviri
 
 import com.k2fsa.sherpa.onnx.FeatureConfig
-import com.k2fsa.sherpa.onnx.GeneratedAudio
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
@@ -16,6 +15,9 @@ import com.k2fsa.sherpa.onnx.VadModelConfig
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+
+/** Çalınacak/gönderilecek ses: tek kanal, [-1, 1] aralığında örnekler. */
+class Speech(val samples: FloatArray, val rate: Int)
 
 fun newVad(models: ModelInstaller): Vad = Vad(
     null,
@@ -33,7 +35,7 @@ fun newVad(models: ModelInstaller): Vad = Vad(
     ),
 )
 
-/** Whisper small (8 bit) ile konuşmayı yazıya çevirir. */
+/** Whisper small (8 bit) ile konuşmayı yazıya çevirir. Her iki modda da telefonda çalışır. */
 class Recognizer(models: ModelInstaller, threads: Int) {
     private val base = OfflineRecognizerConfig(
         featConfig = FeatureConfig(sampleRate = RATE, featureDim = 80),
@@ -69,12 +71,12 @@ class Recognizer(models: ModelInstaller, threads: Int) {
     }
 }
 
-/** Piper sesleri; aynı anda en fazla iki ses bellekte tutulur. */
+/** Piper sesleri (internetsiz mod); aynı anda en fazla iki ses bellekte tutulur. */
 class TtsBank(private val models: ModelInstaller) {
     private val cache = LinkedHashMap<String, OfflineTts>()
 
     @Synchronized
-    fun synth(voice: Voice, text: String, speed: Float): GeneratedAudio {
+    fun synth(voice: Voice, text: String, speed: Float): Speech {
         var tts = cache[voice.id]
         if (tts == null) {
             if (cache.size >= 2) {
@@ -97,14 +99,34 @@ class TtsBank(private val models: ModelInstaller) {
             )
             cache[voice.id] = tts
         }
-        return tts.generate(text, 0, speed)
+        val audio = tts.generate(text, 0, speed)
+        return Speech(audio.samples, audio.sampleRate)
     }
 }
 
 class Engine(val models: ModelInstaller) {
     val recognizer = Recognizer(models, 4)
-    val translator = NllbTranslator(File(models.root, "nllb"), 4)
-    val tts = TtsBank(models)
+    private val piper = TtsBank(models)
+    private var nllb: NllbTranslator? = null
+
+    /** NLLB yalnız internetsiz mod ilk kez kullanıldığında belleğe alınır. */
+    @Synchronized
+    private fun offlineTranslator(): NllbTranslator =
+        nllb ?: NllbTranslator(File(models.root, "nllb"), 4).also { nllb = it }
+
+    fun translate(text: String, src: Lang, tgt: Lang, online: Boolean): String =
+        if (online) GoogleTranslate.translate(text, src, tgt) else offlineTranslator().translate(text, src, tgt)
+
+    /** voiceIndex: seçili modun ses listesindeki sıra. */
+    fun speak(text: String, lang: Lang, online: Boolean, voiceIndex: Int, speed: Float): Speech =
+        if (online) {
+            val voices = EdgeVoices.forLang(lang)
+            val mp3 = EdgeTts.synth(text, voices[voiceIndex.coerceIn(0, voices.size - 1)], speed)
+            AudioDecoder.decodeBytes(mp3)
+        } else {
+            val voices = Voices.forLang(lang)
+            piper.synth(voices[voiceIndex.coerceIn(0, voices.size - 1)], text, speed)
+        }
 
     sealed class Outcome {
         data class Done(
@@ -120,7 +142,9 @@ class Engine(val models: ModelInstaller) {
      * Bir konuşma bölümünü tanır ve çevirir.
      * fixed != null ise dil sabittir; değilse Whisper algılar ve [allowed] içine eşlenir.
      */
-    fun understand(samples: FloatArray, fixed: Lang?, allowed: List<Lang>, target: (Lang) -> Lang): Outcome {
+    fun understand(
+        samples: FloatArray, fixed: Lang?, allowed: List<Lang>, online: Boolean, target: (Lang) -> Lang,
+    ): Outcome {
         val t0 = System.currentTimeMillis()
         val first = recognizer.recognize(samples, fixed?.whisper ?: "")
         var text = first.first
@@ -133,7 +157,7 @@ class Engine(val models: ModelInstaller) {
         if (isNoise(text)) return Outcome.Empty
         val t1 = System.currentTimeMillis()
         val tgt = target(src)
-        val out = translator.translate(text, src, tgt)
+        val out = translate(text, src, tgt, online)
         return Outcome.Done(src, text, tgt, out, t1 - t0, System.currentTimeMillis() - t1)
     }
 

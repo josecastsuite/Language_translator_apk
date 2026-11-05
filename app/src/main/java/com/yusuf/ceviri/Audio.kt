@@ -8,6 +8,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaDataSource
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
@@ -221,6 +222,35 @@ object AudioDecoder {
         val ex = MediaExtractor()
         try {
             ex.setDataSource(ctx, uri, null)
+            val s = decode(ex)
+            return resample(s.samples, s.rate, RATE)
+        } finally {
+            ex.release()
+        }
+    }
+
+    /** Bellekteki ses verisini (örn. Edge'den gelen MP3) kendi örnekleme hızında çözer. */
+    fun decodeBytes(bytes: ByteArray): Speech {
+        val ex = MediaExtractor()
+        try {
+            ex.setDataSource(object : MediaDataSource() {
+                override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+                    if (position >= bytes.size) return -1
+                    val n = minOf(size.toLong(), bytes.size - position).toInt()
+                    System.arraycopy(bytes, position.toInt(), buffer, offset, n)
+                    return n
+                }
+
+                override fun getSize(): Long = bytes.size.toLong()
+                override fun close() {}
+            })
+            return decode(ex)
+        } finally {
+            ex.release()
+        }
+    }
+
+    private fun decode(ex: MediaExtractor): Speech {
             var track = -1
             var format: MediaFormat? = null
             for (i in 0 until ex.trackCount) {
@@ -302,10 +332,7 @@ object AudioDecoder {
                 }
                 codec.release()
             }
-            return resample(mono.toArray(), rate, RATE)
-        } finally {
-            ex.release()
-        }
+            return Speech(mono.toArray(), rate)
     }
 
     /** Doğrusal ara değerleme; küçültmede önce kutu süzgeciyle örtüşme (aliasing) azaltılır. */

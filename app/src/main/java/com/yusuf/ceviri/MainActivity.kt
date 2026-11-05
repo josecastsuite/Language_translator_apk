@@ -12,6 +12,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -27,7 +29,6 @@ import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.core.content.FileProvider
-import com.k2fsa.sherpa.onnx.GeneratedAudio
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -56,6 +57,7 @@ class MainActivity : Activity() {
     private lateinit var outTheirs: Spinner
     private lateinit var recBtn: Button
     private lateinit var speedLabel: TextView
+    private lateinit var voiceBox: LinearLayout
 
     private var mic: MicListener? = null
     private var activeButton: Button? = null
@@ -68,7 +70,7 @@ class MainActivity : Activity() {
     private var lastIncoming: Pair<Lang, String>? = null
 
     @Volatile
-    private var outgoingAudio: GeneratedAudio? = null
+    private var outgoingAudio: Speech? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -179,18 +181,24 @@ class MainActivity : Activity() {
             rb.textSize = 13f
             modeGroup.addView(rb, RadioGroup.LayoutParams(0, WRAP, 1f))
         }
+        body.addView(buildOnlineToggle())
         body.addView(modeGroup)
 
         val controls = LinearLayout(this)
         controls.orientation = LinearLayout.VERTICAL
         val controlsScroll = ScrollView(this)
         controlsScroll.addView(controls)
-        body.addView(controlsScroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        val savedSplit = prefs.getInt("split", 0)
+        body.addView(
+            controlsScroll,
+            if (savedSplit > 0) LinearLayout.LayoutParams(MATCH, savedSplit) else LinearLayout.LayoutParams(MATCH, 0, 1f),
+        )
         panels.add(buildListenPanel())
         panels.add(buildConversationPanel())
         panels.add(buildVoiceMessagePanel())
         for (p in panels) controls.addView(p)
         controls.addView(buildVoiceSettings())
+        body.addView(buildSplitHandle(controlsScroll))
 
         val logHeader = LinearLayout(this)
         logHeader.orientation = LinearLayout.HORIZONTAL
@@ -252,13 +260,76 @@ class MainActivity : Activity() {
         return p
     }
 
+    private fun buildOnlineToggle(): View {
+        val g = RadioGroup(this)
+        g.orientation = RadioGroup.HORIZONTAL
+        val on = RadioButton(this)
+        on.id = View.generateViewId()
+        on.text = "İnternetli (hızlı)"
+        val off = RadioButton(this)
+        off.id = View.generateViewId()
+        off.text = "İnternetsiz"
+        g.addView(on, RadioGroup.LayoutParams(0, WRAP, 1f))
+        g.addView(off, RadioGroup.LayoutParams(0, WRAP, 1f))
+        g.check(if (isOnline()) on.id else off.id)
+        g.setOnCheckedChangeListener { _, id ->
+            stopAll()
+            prefs.edit().putBoolean("online", id == on.id).apply()
+            refreshVoices()
+            setStatus(if (id == on.id) "İnternetli: çeviri Google, ses Edge." else "İnternetsiz: her şey telefonda.")
+        }
+        return labeled("Çeviri ve ses", g)
+    }
+
+    /** Ayarlar ile konuşma geçmişi arasındaki tutamak: sürükleyerek alanları büyüt/küçült. */
+    private fun buildSplitHandle(top: View): View {
+        val h = TextView(this)
+        h.text = "▲  sürükleyerek büyüt / küçült  ▼"
+        h.gravity = Gravity.CENTER
+        h.textSize = 11f
+        h.setTextColor(Color.DKGRAY)
+        h.setBackgroundColor(Color.rgb(222, 222, 222))
+        h.setPadding(0, dp(8), 0, dp(8))
+        var startY = 0f
+        var startH = 0
+        h.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startY = e.rawY
+                    startH = top.height
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val min = dp(60)
+                    val max = maxOf(min, body.height - dp(170))
+                    val lp = top.layoutParams as LinearLayout.LayoutParams
+                    lp.height = (startH + (e.rawY - startY)).toInt().coerceIn(min, max)
+                    lp.weight = 0f
+                    top.layoutParams = lp
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    prefs.edit().putInt("split", top.layoutParams.height).apply()
+                    v.performClick()
+                }
+            }
+            true
+        }
+        return h
+    }
+
+    private fun refreshVoices() {
+        voiceBox.removeAllViews()
+        for (lang in Lang.entries) {
+            voiceBox.addView(labeled("${lang.label} sesi", spinner(voiceLabels(lang), voiceKey(lang), 0)))
+        }
+    }
+
     private fun buildVoiceSettings(): View {
         val p = panel()
         p.addView(text("Ses ayarları", 15f, bold = true))
-        for (lang in Lang.entries) {
-            val voices = Voices.forLang(lang)
-            p.addView(labeled("${lang.label} sesi", spinner(voices.map { it.label }, voiceKey(lang), 0)))
-        }
+        voiceBox = LinearLayout(this)
+        voiceBox.orientation = LinearLayout.VERTICAL
+        p.addView(voiceBox)
+        refreshVoices()
         speedLabel = text("", 13f)
         p.addView(speedLabel)
         val bar = SeekBar(this)
@@ -320,9 +391,10 @@ class MainActivity : Activity() {
     private fun startMic(btn: Button, stopText: String, fixed: Lang?, allowed: List<Lang>, target: (Lang) -> Lang) {
         val engine = Core.engine ?: return
         val token = session.incrementAndGet()
+        val online = isOnline()
         val listener = MicListener(
             engine.models,
-            onSegment = { l, samples -> Core.worker.execute { handleSegment(token, l, engine, samples, fixed, allowed, target) } },
+            onSegment = { l, samples -> Core.worker.execute { handleSegment(token, l, engine, samples, fixed, allowed, online, target) } },
             onSpeech = { speaking -> post { if (session.get() == token) setStatus(if (speaking) "Konuşma algılandı…" else "Dinleniyor…") } },
             onError = { t -> post { showError("Mikrofon hatası", t); stopAll() } },
         )
@@ -337,12 +409,12 @@ class MainActivity : Activity() {
 
     private fun handleSegment(
         token: Int, listener: MicListener, engine: Engine, samples: FloatArray,
-        fixed: Lang?, allowed: List<Lang>, target: (Lang) -> Lang,
+        fixed: Lang?, allowed: List<Lang>, online: Boolean, target: (Lang) -> Lang,
     ) {
         if (session.get() != token) return
         post { setStatus("Çevriliyor…") }
         try {
-            when (val r = engine.understand(samples, fixed, allowed, target)) {
+            when (val r = engine.understand(samples, fixed, allowed, online, target)) {
                 is Engine.Outcome.Empty -> {}
                 is Engine.Outcome.Unknown -> post {
                     addNote("Dil anlaşılamadı (${r.code}). Lütfen tekrar söyleyin.", r.text)
@@ -350,10 +422,10 @@ class MainActivity : Activity() {
                 is Engine.Outcome.Done -> {
                     post { addTurn(r, null) }
                     if (r.src != r.tgt && session.get() == token) {
-                        val audio = engine.tts.synth(currentVoice(r.tgt), r.tgtText, speed())
+                        val audio = engine.speak(r.tgtText, r.tgt, online, voiceIndex(r.tgt), speed())
                         listener.muted = true
                         try {
-                            Player.play(audio.samples, audio.sampleRate) { session.get() != token }
+                            Player.play(audio.samples, audio.rate) { session.get() != token }
                         } finally {
                             listener.muted = false
                         }
@@ -420,6 +492,7 @@ class MainActivity : Activity() {
     private fun translateIncoming(uri: Uri) {
         val engine = Core.engine ?: return
         val tgt = Lang.entries[inTgt.selectedItemPosition]
+        val online = isOnline()
         setStatus("Sesli mesaj okunuyor…")
         Core.worker.execute {
             try {
@@ -436,7 +509,7 @@ class MainActivity : Activity() {
                 var mt = 0L
                 segments.forEachIndexed { idx, seg ->
                     post { setStatus("Sesli mesaj çevriliyor ${idx + 1}/${segments.size}…") }
-                    when (val r = engine.understand(seg, null, Lang.entries.toList()) { tgt }) {
+                    when (val r = engine.understand(seg, null, Lang.entries.toList(), online) { tgt }) {
                         is Engine.Outcome.Done -> {
                             src.add(r.srcText)
                             dst.add(r.tgtText)
@@ -472,10 +545,11 @@ class MainActivity : Activity() {
             return
         }
         val token = session.incrementAndGet()
+        val online = isOnline()
         Core.worker.execute {
             try {
-                val audio = engine.tts.synth(currentVoice(lang), text, speed())
-                Player.play(audio.samples, audio.sampleRate) { session.get() != token }
+                val audio = engine.speak(text, lang, online, voiceIndex(lang), speed())
+                Player.play(audio.samples, audio.rate) { session.get() != token }
             } catch (t: Throwable) {
                 post { showError("Seslendirme hatası", t) }
             }
@@ -509,6 +583,7 @@ class MainActivity : Activity() {
             return
         }
         outgoingAudio = null
+        val online = isOnline()
         setStatus("Kayıt çevriliyor…")
         Core.worker.execute {
             try {
@@ -518,7 +593,7 @@ class MainActivity : Activity() {
                 var asr = 0L
                 var mt = 0L
                 for (seg in segments) {
-                    val r = engine.understand(seg, mine, listOf(mine)) { theirs }
+                    val r = engine.understand(seg, mine, listOf(mine), online) { theirs }
                     if (r is Engine.Outcome.Done) {
                         src.add(r.srcText)
                         dst.add(r.tgtText)
@@ -531,7 +606,7 @@ class MainActivity : Activity() {
                     return@execute
                 }
                 val res = Engine.Outcome.Done(mine, src.joinToString(" "), theirs, dst.joinToString(" "), asr, mt)
-                outgoingAudio = engine.tts.synth(currentVoice(theirs), res.tgtText, speed())
+                outgoingAudio = engine.speak(res.tgtText, theirs, online, voiceIndex(theirs), speed())
                 post {
                     addTurn(res, "Giden mesaj")
                     setStatus("Hazır: \"Dinle\" ile kontrol edin, \"WhatsApp'a gönder\" ile paylaşın.")
@@ -550,7 +625,7 @@ class MainActivity : Activity() {
         val token = session.incrementAndGet()
         Core.worker.execute {
             try {
-                Player.play(audio.samples, audio.sampleRate) { session.get() != token }
+                Player.play(audio.samples, audio.rate) { session.get() != token }
             } catch (t: Throwable) {
                 post { showError("Çalma hatası", t) }
             }
@@ -568,7 +643,7 @@ class MainActivity : Activity() {
                 dir.mkdirs()
                 dir.listFiles()?.forEach { it.delete() }
                 val file = File(dir, "ceviri_${System.currentTimeMillis()}.m4a")
-                AacWriter.write(audio.samples, audio.sampleRate, file)
+                AacWriter.write(audio.samples, audio.rate, file)
                 val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
                 val send = Intent(Intent.ACTION_SEND)
                 send.type = "audio/mp4"
@@ -590,12 +665,15 @@ class MainActivity : Activity() {
         return false
     }
 
-    private fun voiceKey(lang: Lang) = "voice_${lang.name}"
+    private fun isOnline(): Boolean = prefs.getBoolean("online", true)
 
-    private fun currentVoice(lang: Lang): Voice {
-        val list = Voices.forLang(lang)
-        return list[prefs.getInt(voiceKey(lang), 0).coerceIn(0, list.size - 1)]
-    }
+    /** İnternetli ve internetsiz modun ses listeleri farklı; seçimler ayrı saklanır. */
+    private fun voiceKey(lang: Lang) = if (isOnline()) "voice_on_${lang.name}" else "voice_${lang.name}"
+
+    private fun voiceLabels(lang: Lang): List<String> =
+        if (isOnline()) EdgeVoices.forLang(lang).map { it.label } else Voices.forLang(lang).map { it.label }
+
+    private fun voiceIndex(lang: Lang): Int = prefs.getInt(voiceKey(lang), 0)
 
     private fun speed(): Float = 0.6f + prefs.getInt("speed", 40).coerceIn(0, 80) / 100f
 

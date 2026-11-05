@@ -73,4 +73,5 @@ dependencies {
     implementation(files("libs/sherpa-onnx-static-link-onnxruntime-1.13.8.aar"))
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.26.0")
     implementation("androidx.core:core:1.13.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
