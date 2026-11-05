@@ -58,6 +58,8 @@ class MainActivity : Activity() {
     private lateinit var recBtn: Button
     private lateinit var speedLabel: TextView
     private lateinit var voiceBox: LinearLayout
+    private lateinit var chooser: LinearLayout
+    private lateinit var modeLabel: TextView
 
     private var mic: MicListener? = null
     private var activeButton: Button? = null
@@ -141,6 +143,10 @@ class MainActivity : Activity() {
     }
 
     private fun onReady() {
+        if (!Core.modeChosen) {
+            setStatus("Hazır. Nasıl çalışacağını seçin.")
+            return
+        }
         body.visibility = View.VISIBLE
         val uri = pendingUri
         if (uri != null) {
@@ -167,6 +173,9 @@ class MainActivity : Activity() {
         progress.visibility = View.GONE
         root.addView(progress)
 
+        chooser = buildChooser()
+        root.addView(chooser)
+
         body = LinearLayout(this)
         body.orientation = LinearLayout.VERTICAL
         body.visibility = View.GONE
@@ -181,7 +190,14 @@ class MainActivity : Activity() {
             rb.textSize = 13f
             modeGroup.addView(rb, RadioGroup.LayoutParams(0, WRAP, 1f))
         }
-        body.addView(buildOnlineToggle())
+        val modeRow = LinearLayout(this)
+        modeRow.orientation = LinearLayout.HORIZONTAL
+        modeLabel = text("", 12f)
+        modeLabel.setTextColor(Color.DKGRAY)
+        modeRow.addView(modeLabel, LinearLayout.LayoutParams(0, WRAP, 1f))
+        modeRow.addView(button("Modu değiştir") { askMode() })
+        body.addView(modeRow)
+        updateModeLabel()
         body.addView(modeGroup)
 
         val controls = LinearLayout(this)
@@ -260,25 +276,34 @@ class MainActivity : Activity() {
         return p
     }
 
-    private fun buildOnlineToggle(): View {
-        val g = RadioGroup(this)
-        g.orientation = RadioGroup.HORIZONTAL
-        val on = RadioButton(this)
-        on.id = View.generateViewId()
-        on.text = "İnternetli (hızlı)"
-        val off = RadioButton(this)
-        off.id = View.generateViewId()
-        off.text = "İnternetsiz"
-        g.addView(on, RadioGroup.LayoutParams(0, WRAP, 1f))
-        g.addView(off, RadioGroup.LayoutParams(0, WRAP, 1f))
-        g.check(if (isOnline()) on.id else off.id)
-        g.setOnCheckedChangeListener { _, id ->
-            stopAll()
-            prefs.edit().putBoolean("online", id == on.id).apply()
-            refreshVoices()
-            setStatus(if (id == on.id) "İnternetli: çeviri Google, ses Edge." else "İnternetsiz: her şey telefonda.")
-        }
-        return labeled("Çeviri ve ses", g)
+    /** Açılışta sorulur: İnternetli mi, İnternetsiz mi? */
+    private fun buildChooser(): LinearLayout {
+        val p = panel()
+        p.addView(text("Nasıl çalışsın?", 17f, bold = true))
+        p.addView(text("Ses tanıma her iki durumda da telefonda yapılır.", 13f))
+        p.addView(button("İnternetli (hızlı) · çeviri Google, ses Edge") { chooseMode(true) })
+        p.addView(button("İnternetsiz · her şey telefonda") { chooseMode(false) })
+        p.visibility = if (Core.modeChosen) View.GONE else View.VISIBLE
+        return p
+    }
+
+    private fun askMode() {
+        stopAll()
+        body.visibility = View.GONE
+        chooser.visibility = View.VISIBLE
+    }
+
+    private fun chooseMode(online: Boolean) {
+        prefs.edit().putBoolean("online", online).apply()
+        Core.modeChosen = true
+        chooser.visibility = View.GONE
+        refreshVoices()
+        updateModeLabel()
+        if (Core.engine != null) onReady() else setStatus("Modeller yükleniyor, lütfen bekleyin…")
+    }
+
+    private fun updateModeLabel() {
+        modeLabel.text = if (isOnline()) "Mod: İnternetli (çeviri Google, ses Edge)" else "Mod: İnternetsiz (her şey telefonda)"
     }
 
     /** Ayarlar ile konuşma geçmişi arasındaki tutamak: sürükleyerek alanları büyüt/küçült. */
@@ -461,7 +486,7 @@ class MainActivity : Activity() {
             else -> null
         } ?: return
         modeGroup.check(modeIds[2])
-        if (Core.engine != null) {
+        if (Core.engine != null && Core.modeChosen) {
             translateIncoming(uri)
         } else {
             pendingUri = uri

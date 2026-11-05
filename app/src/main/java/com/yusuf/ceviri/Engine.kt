@@ -216,6 +216,10 @@ object Core {
     @Volatile
     var loading = false
 
+    /** Bu açılışta İnternetli/İnternetsiz seçimi yapıldı mı (uygulama kapanınca yeniden sorulur). */
+    @Volatile
+    var modeChosen = false
+
     /** Tanıma/çeviri/seslendirme sırayla tek iş parçacığında yapılır. */
     val worker: ExecutorService = Executors.newSingleThreadExecutor()
 }
