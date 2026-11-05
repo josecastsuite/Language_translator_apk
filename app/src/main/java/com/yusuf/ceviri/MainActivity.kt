@@ -67,6 +67,13 @@ class MainActivity : Activity() {
     private val recParts = ArrayList<String>()
     private var recMs = 0L
     private var recStopping = false
+
+    /** Son okunan çeviri ve okumanın bittiği an: hoparlör yankısını ayırt etmek için. */
+    @Volatile
+    private var lastSpokenText = ""
+
+    @Volatile
+    private var lastSpokenEnd = 0L
     private var activeButton: Button? = null
     private var activeButtonText = ""
     private var recorder: MicRecorder? = null
@@ -461,7 +468,7 @@ class MainActivity : Activity() {
         token: Int, g: GoogleSpeech, engine: Engine, text: String, lang: Lang?, ms: Long,
         allowed: List<Lang>, target: (Lang) -> Lang,
     ) {
-        if (text.isBlank() || Engine.isNoise(text)) {
+        if (text.isBlank() || Engine.isNoise(text) || isEcho(text)) {
             g.resume()
             return
         }
@@ -480,8 +487,13 @@ class MainActivity : Activity() {
                     post { addTurn(r, null) }
                     if (src != tgt && session.get() == token) {
                         val audio = engine.speak(out, tgt, true, voiceIndex(tgt), speed())
+                        lastSpokenText = out
                         g.pause()
-                        Player.play(audio.samples, audio.rate) { session.get() != token }
+                        try {
+                            Player.play(audio.samples, audio.rate) { session.get() != token }
+                        } finally {
+                            lastSpokenEnd = System.currentTimeMillis()
+                        }
                     }
                 }
             } catch (t: Throwable) {
@@ -491,6 +503,23 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    /**
+     * Okuma bittikten sonraki birkaç saniyede gelen ve az önce okunan çeviriyle büyük ölçüde
+     * aynı kelimelerden oluşan cümle, telefonun kendi sesinin yankısıdır; çevrilmez.
+     */
+    private fun isEcho(text: String): Boolean {
+        val spoken = lastSpokenText
+        if (spoken.isEmpty() || System.currentTimeMillis() - lastSpokenEnd > ECHO_WINDOW_MS) return false
+        val a = words(text)
+        val b = words(spoken)
+        if (a.isEmpty() || b.isEmpty()) return false
+        val common = a.count { it in b }
+        return common.toFloat() / minOf(a.size, b.size) >= 0.6f
+    }
+
+    private fun words(s: String): Set<String> =
+        s.lowercase().replace("i\u0307", "i").split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }.toSet()
 
     private fun startMic(btn: Button, stopText: String, fixed: Lang?, allowed: List<Lang>, target: (Lang) -> Lang) {
         val engine = Core.engine ?: return
@@ -1000,6 +1029,7 @@ class MainActivity : Activity() {
         private const val REQ_MIC = 1
         private const val REQ_PICK = 2
         private const val MB = 1024L * 1024L
+        private const val ECHO_WINDOW_MS = 6000L
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
         private val MODE_NAMES = listOf("Dinle-Çevir", "Karşılıklı", "Sesli mesaj")
