@@ -1,0 +1,87 @@
+name: APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Imza anahtarini hazirla
+        env:
+          KS_B64: ${{ secrets.CEVIRI_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KS_B64" ]; then
+            echo "::error::CEVIRI_KEYSTORE_B64 secret'i eksik (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          echo "CEVIRI_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+
+      - name: Disk alani ac
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Model onbellegini geri yukle
+        uses: actions/cache/restore@v4
+        with:
+          path: dl
+          key: models-${{ hashFiles('tools/fetch_models.sh') }}
+
+      - name: Modelleri indir ve hazirla
+        run: |
+          pip install --quiet onnx==1.23.2 numpy
+          bash tools/fetch_models.sh
+
+      - name: Model onbellegini kaydet
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: dl
+          key: models-${{ hashFiles('tools/fetch_models.sh') }}
+
+      - name: Gradle kur
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gradle.zip" https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-8.11.1/bin" >> "$GITHUB_PATH"
+
+      - name: APK derle
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          CEVIRI_KEYSTORE_PASSWORD: ${{ secrets.CEVIRI_KEYSTORE_PASSWORD }}
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Yayinla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          ls -la "$APK"
+          OUT="Cevirmen-1.0.${{ github.run_number }}.apk"
+          cp "$APK" "$OUT"
+          gh release create "v1.0.${{ github.run_number }}" "$OUT" \
+            --title "Çevirmen 1.0.${{ github.run_number }}" \
+            --notes "Otomatik derleme, commit ${{ github.sha }}. Modeller APK içinde."
