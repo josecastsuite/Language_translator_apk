@@ -462,7 +462,7 @@ class MainActivity : Activity() {
         allowed: List<Lang>, target: (Lang) -> Lang,
     ) {
         if (text.isBlank() || Engine.isNoise(text)) {
-            g.listen()
+            g.resume()
             return
         }
         setStatus("Çevriliyor…")
@@ -480,18 +480,14 @@ class MainActivity : Activity() {
                     post { addTurn(r, null) }
                     if (src != tgt && session.get() == token) {
                         val audio = engine.speak(out, tgt, true, voiceIndex(tgt), speed())
+                        g.pause()
                         Player.play(audio.samples, audio.rate) { session.get() != token }
                     }
                 }
             } catch (t: Throwable) {
                 post { showError("Çeviri hatası", t) }
             } finally {
-                post {
-                    if (session.get() == token) {
-                        setStatus("Dinleniyor…")
-                        g.listen()
-                    }
-                }
+                if (session.get() == token) g.resume()
             }
         }
     }
@@ -724,7 +720,7 @@ class MainActivity : Activity() {
                         recParts.add(text)
                         recMs += ms
                     }
-                    if (recStopping) completeOnlineRecord(token, engine, mine, theirs) else g.listen()
+                    if (recStopping) completeOnlineRecord(token, engine, mine, theirs) else g.resume()
                 }
             },
             onError = { m ->
