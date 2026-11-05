@@ -56,6 +56,13 @@ android {
         ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~"
     }
 
+    // Yalniz arm64 telefon hedefleniyor; iki kutuphanenin diger mimari kopyalari cakisiyor.
+    packaging {
+        jniLibs {
+            excludes += listOf("lib/x86/**", "lib/x86_64/**", "lib/armeabi-v7a/**")
+        }
+    }
+
     lint {
         checkReleaseBuilds = false
         abortOnError = false
