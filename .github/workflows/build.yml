@@ -19,17 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Imza anahtarini hazirla
-        env:
-          KS_B64: ${{ secrets.CEVIRI_KEYSTORE_B64 }}
-        run: |
-          if [ -z "$KS_B64" ]; then
-            echo "::error::CEVIRI_KEYSTORE_B64 secret'i eksik (Settings > Secrets and variables > Actions)"
-            exit 1
-          fi
-          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
-          echo "CEVIRI_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
-
       - name: Disk alani ac
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules /opt/hostedtoolcache/CodeQL || true
@@ -52,8 +41,9 @@ jobs:
 
       - name: Modelleri indir ve hazirla
         run: |
+          set -o pipefail
           pip install --quiet onnx==1.23.2 numpy
-          bash tools/fetch_models.sh
+          bash tools/fetch_models.sh 2>&1 | tee models.log
 
       - name: Model onbellegini kaydet
         uses: actions/cache/save@v4
@@ -61,6 +51,43 @@ jobs:
         with:
           path: dl
           key: models-${{ hashFiles('tools/fetch_models.sh') }}
+
+      - name: Imza anahtari onbellegi
+        uses: actions/cache/restore@v4
+        with:
+          path: ci-imza
+          key: ceviri-imza-v1
+
+      - name: Imza anahtarini hazirla
+        env:
+          KS_B64: ${{ secrets.CEVIRI_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.CEVIRI_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+            echo "CEVIRI_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+            echo "CEVIRI_KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
+            echo "Imza: kalici anahtar (Secrets)"
+          else
+            # Secret yoksa: GitHub onbelleginde tutulan anahtar (7 gun kullanilmazsa silinir).
+            mkdir -p ci-imza
+            if [ ! -f ci-imza/release.p12 ]; then
+              PASS=$(openssl rand -hex 24)
+              keytool -genkeypair -keystore ci-imza/release.p12 -storetype pkcs12 -alias ceviri                 -keyalg RSA -keysize 2048 -validity 14600 -storepass "$PASS" -keypass "$PASS"                 -dname "CN=Cevirmen, O=Kisisel"
+              echo -n "$PASS" > ci-imza/pass
+            fi
+            echo "::add-mask::$(cat ci-imza/pass)"
+            echo "CEVIRI_KEYSTORE=$PWD/ci-imza/release.p12" >> "$GITHUB_ENV"
+            echo "CEVIRI_KEYSTORE_PASSWORD=$(cat ci-imza/pass)" >> "$GITHUB_ENV"
+            echo "Imza: onbellekteki anahtar"
+          fi
+
+      - name: Imza anahtari onbellegini kaydet
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ci-imza
+          key: ceviri-imza-v1
 
       - name: Gradle kur
         run: |
@@ -71,8 +98,18 @@ jobs:
       - name: APK derle
         env:
           BUILD_NUMBER: ${{ github.run_number }}
-          CEVIRI_KEYSTORE_PASSWORD: ${{ secrets.CEVIRI_KEYSTORE_PASSWORD }}
-        run: gradle --no-daemon --stacktrace :app:assembleRelease
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee build.log
+
+      - name: Derleme hatalarini ozetle
+        if: failure()
+        run: |
+          for f in build.log models.log; do
+            [ -f "$f" ] || continue
+            MSG=$(grep -E "^e: |error:|ERROR|What went wrong|Exception|FAILED|Caused by|No such file|curl: \(" -A2 "$f" | grep -v "^--$" | head -60 | cut -c1-300 | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=$f::$MSG"
+          done
 
       - name: Yayinla
         env:
