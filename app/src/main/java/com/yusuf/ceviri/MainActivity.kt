@@ -89,6 +89,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("ayarlar", MODE_PRIVATE)
+        BeepGuard.stop(this)
         setContentView(buildUi())
         handleIntent(intent)
         startLoading()
@@ -451,6 +452,7 @@ class MainActivity : Activity() {
             },
         )
         google = g
+        BeepGuard.start(this)
         activeButton = btn
         activeButtonText = btn.text.toString()
         btn.text = stopText
@@ -490,7 +492,7 @@ class MainActivity : Activity() {
                         lastSpokenText = out
                         g.pause()
                         try {
-                            Player.play(audio.samples, audio.rate) { session.get() != token }
+                            Player.play(audio.samples, audio.rate, alarm = true) { session.get() != token }
                         } finally {
                             lastSpokenEnd = System.currentTimeMillis()
                         }
@@ -581,6 +583,7 @@ class MainActivity : Activity() {
         googleRec?.release()
         googleRec = null
         recStopping = false
+        BeepGuard.stop(this)
         activeButton?.text = activeButtonText
         activeButton = null
         recorder?.stop()
@@ -760,6 +763,7 @@ class MainActivity : Activity() {
             },
         )
         googleRec = g
+        BeepGuard.start(this)
         recBtn.text = "Kaydı bitir ve çevir"
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setStatus("Google konuşma tanıması hazırlanıyor…")
@@ -774,6 +778,7 @@ class MainActivity : Activity() {
     private fun completeOnlineRecord(token: Int, engine: Engine, mine: Lang, theirs: Lang) {
         googleRec?.release()
         googleRec = null
+        BeepGuard.stop(this)
         recStopping = false
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val text = recParts.joinToString(" ").trim()

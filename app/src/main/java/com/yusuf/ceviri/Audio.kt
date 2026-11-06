@@ -177,13 +177,13 @@ class MicRecorder(private val onError: (Throwable) -> Unit) {
 
 object Player {
     /** Sesi hoparlörden çalar ve bitene kadar bekler. */
-    fun play(samples: FloatArray, rate: Int, stop: () -> Boolean) {
+    fun play(samples: FloatArray, rate: Int, alarm: Boolean = false, stop: () -> Boolean) {
         if (samples.isEmpty()) return
         val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT)
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setUsage(if (alarm) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
