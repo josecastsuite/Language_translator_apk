@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -470,6 +471,7 @@ class MainActivity : Activity() {
         token: Int, g: GoogleSpeech, engine: Engine, text: String, lang: Lang?, ms: Long,
         allowed: List<Lang>, target: (Lang) -> Lang,
     ) {
+        Log.i(GoogleSpeech.TAG, "son metin: '$text' dil=$lang ${ms}ms yankı=${isEcho(text)}")
         if (text.isBlank() || Engine.isNoise(text) || isEcho(text)) {
             g.resume()
             return
@@ -490,11 +492,13 @@ class MainActivity : Activity() {
                     if (src != tgt && session.get() == token) {
                         val audio = engine.speak(out, tgt, true, voiceIndex(tgt), speed())
                         lastSpokenText = out
+                        Log.i(GoogleSpeech.TAG, "okuma başlıyor: ${audio.samples.size} örnek ${audio.rate} Hz '$out'")
                         g.pause()
                         try {
                             Player.play(audio.samples, audio.rate, alarm = true) { session.get() != token }
                         } finally {
                             lastSpokenEnd = System.currentTimeMillis()
+                            Log.i(GoogleSpeech.TAG, "okuma bitti")
                         }
                     }
                 }

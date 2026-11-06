@@ -12,6 +12,7 @@ import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 
 /**
  * İnternetli mod ses tanıması: Google'ın konuşma tanıması. Android 14+ dil değiştirme
@@ -114,6 +115,7 @@ class GoogleSpeech(
         try {
             rec.checkRecognitionSupport(intent(allowed, false), ctx.mainExecutor, object : RecognitionSupportCallback {
                 override fun onSupportResult(support: RecognitionSupport) {
+                    Log.i(TAG, "destek: kurulu=${support.installedOnDeviceLanguages} desteklenen=${support.supportedOnDeviceLanguages.size} bekleyen=${support.pendingOnDeviceLanguages} online=${support.onlineLanguages.size}")
                     if (released || done) return
                     val installed = support.installedOnDeviceLanguages
                     val missing = allowed.filter { l -> installed.none { l.matches(it) } }
@@ -130,6 +132,7 @@ class GoogleSpeech(
                 }
 
                 override fun onError(error: Int) {
+                    Log.i(TAG, "destek sorgusu hata $error")
                     proceed()
                 }
             })
@@ -143,6 +146,7 @@ class GoogleSpeech(
         val rec = if (onDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
         else SpeechRecognizer.createSpeechRecognizer(ctx)
         recognizer = rec
+        Log.i(TAG, "tanıyıcı oluşturuldu onDevice=$onDevice")
         return rec
     }
 
@@ -189,6 +193,7 @@ class GoogleSpeech(
             return
         }
         onDevice = false
+        Log.i(TAG, "standart tanıyıcıya geçiliyor: $reason")
         create()
         status("Telefondaki tanıyıcı açılmadı ($reason); Google (standart) kullanılıyor.")
         listen()
@@ -206,6 +211,7 @@ class GoogleSpeech(
      * kalkar; tek seferlik oturumda dinleme yeniden başlatılır.
      */
     fun resume() {
+        Log.i(TAG, "devam (segmented=$segmented)")
         if (ignoring) ignoreUntil = System.currentTimeMillis() + ECHO_TAIL_MS
         ignoring = false
         main.post {
@@ -231,6 +237,7 @@ class GoogleSpeech(
             val ms = if (endAt > 0) System.currentTimeMillis() - endAt else 0L
             detected = null
             endAt = 0L
+            Log.i(TAG, "teslim: '$text' dil=$lang yoksay=${ignored()}")
             if (ignored() && !finishing) {
                 // Kendi okuduğumuz çeviri duyuldu; at.
                 if (!segmented) onFinal("", null, 0L)
@@ -241,16 +248,20 @@ class GoogleSpeech(
 
         rec.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
+                Log.i(TAG, "hazır (gen=$gen segmented=$segmented)")
                 if (released || gen != listenGeneration) return
                 readySeen = true
                 status("Dinleniyor… konuşabilirsiniz · ${engineName()}")
             }
 
-            override fun onBeginningOfSpeech() {}
+            override fun onBeginningOfSpeech() {
+                Log.i(TAG, "konuşma başladı")
+            }
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
 
             override fun onEndOfSpeech() {
+                Log.i(TAG, "konuşma bitti")
                 endAt = System.currentTimeMillis()
             }
 
@@ -261,21 +272,25 @@ class GoogleSpeech(
             }
 
             override fun onLanguageDetection(results: Bundle) {
+                Log.i(TAG, "dil algılandı: ${results.getString(SpeechRecognizer.DETECTED_LANGUAGE)} güven=${results.getInt(SpeechRecognizer.LANGUAGE_DETECTION_CONFIDENCE_LEVEL)} geçiş=${results.getInt(SpeechRecognizer.LANGUAGE_SWITCH_RESULT)}")
                 results.getString(SpeechRecognizer.DETECTED_LANGUAGE)?.let { tag -> fromTag(tag)?.let { detected = it } }
             }
 
             override fun onSegmentResults(segmentResults: Bundle) {
+                Log.i(TAG, "bölüm sonucu: ${segmentResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)} dil=${segmentResults.getString(SpeechRecognizer.DETECTED_LANGUAGE)}")
                 if (released || gen != listenGeneration) return
                 endAt = if (endAt > 0) endAt else System.currentTimeMillis()
                 deliver(segmentResults)
             }
 
             override fun onEndOfSegmentedSession() {
+                Log.i(TAG, "kesintisiz oturum bitti")
                 if (released || gen != listenGeneration) return
                 if (finishing) onFinal("", null, 0L) else main.postDelayed({ if (!released && gen == listenGeneration) listen() }, 200)
             }
 
             override fun onResults(results: Bundle?) {
+                Log.i(TAG, "sonuç: ${results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)} dil=${results?.getString(SpeechRecognizer.DETECTED_LANGUAGE)} segmented=$segmented")
                 if (released || gen != listenGeneration) return
                 if (segmented) {
                     // Tanıyıcı kesintisiz modu desteklemiyor: bundan sonra tek seferlik oturumlar.
@@ -286,6 +301,7 @@ class GoogleSpeech(
             }
 
             override fun onError(error: Int) {
+                Log.i(TAG, "hata kodu $error (gen=$gen segmented=$segmented ready=$readySeen)")
                 if (released || gen != listenGeneration) return
                 if (finishing) {
                     onFinal("", null, 0L)
@@ -326,6 +342,7 @@ class GoogleSpeech(
 
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
+        Log.i(TAG, "dinleme başlıyor gen=$gen segmented=$segmented diller=${allowed.map { it.bcp47 }}")
         rec.startListening(intent(allowed, segmented))
         // Mikrofon 3 saniyede açılmazsa (hiç yanıt yoksa) standart tanıyıcıya geç.
         main.postDelayed({
@@ -355,5 +372,6 @@ class GoogleSpeech(
 
         /** Okuma bittikten sonra hoparlör yankısı için kısa bekleme. */
         private const val ECHO_TAIL_MS = 500L
+        const val TAG = "Cevirmen"
     }
 }

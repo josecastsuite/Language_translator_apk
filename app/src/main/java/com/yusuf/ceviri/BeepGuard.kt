@@ -2,6 +2,7 @@ package com.yusuf.ceviri
 
 import android.content.Context
 import android.media.AudioManager
+import android.util.Log
 
 /**
  * Google konuşma tanıması her dinleme başlangıcında medya sesinden bip çalar ve bunu
@@ -24,6 +25,7 @@ object BeepGuard {
         val alarmNow = am.getStreamVolume(AudioManager.STREAM_ALARM)
         prefs.edit().putBoolean("active", true).putInt("alarm", alarmNow).apply()
         val target = Math.round(musicNow.toFloat() / musicMax * alarmMax).coerceIn(1, alarmMax)
+        Log.i("Cevirmen", "bip koruması: medya $musicNow/$musicMax, alarm $alarmNow -> $target/$alarmMax")
         try {
             am.setStreamVolume(AudioManager.STREAM_ALARM, target, 0)
         } catch (e: SecurityException) {
@@ -56,5 +58,6 @@ object BeepGuard {
             // alarm sesi olduğu gibi kalır
         }
         prefs.edit().putBoolean("active", false).apply()
+        Log.i("Cevirmen", "bip koruması kapandı, sesler geri açıldı")
     }
 }
